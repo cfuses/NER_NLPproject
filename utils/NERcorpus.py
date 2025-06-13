@@ -1,9 +1,10 @@
-#%%
+
+### Class definition to read sequences from csv into SequenceList object ###
+
 import csv
 from collections import defaultdict
 from skseq.sequences.sequence_list import SequenceList
 from skseq.sequences.label_dictionary import LabelDictionary
-#%%
 
 class NERCorpus(object):
     """
@@ -21,7 +22,7 @@ class NERCorpus(object):
         """
         instance_list = self.read_ner_instances(filename, max_sent_len, max_nr_sent)
 
-        # Step 1: Populate dictionaries
+        # Populate dictionaries
         for sent_x, sent_y in instance_list:
             for word in sent_x:
                 if word not in self.word_dict:
@@ -30,7 +31,7 @@ class NERCorpus(object):
                 if tag not in self.tag_dict:
                     self.tag_dict.add(tag)
 
-        # Step 2: Build the sequence list
+        # Build the sequence list
         seq_list = SequenceList(self.word_dict, self.tag_dict)
         for sent_x, sent_y in instance_list:
             seq_list.add_sequence(sent_x, sent_y, self.word_dict, self.tag_dict)
@@ -61,4 +62,3 @@ class NERCorpus(object):
                 break
 
         return instance_list
-# %%
