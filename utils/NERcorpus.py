@@ -62,3 +62,17 @@ class NERCorpus(object):
                 break
 
         return instance_list
+    
+    def reverse_dictionaries(self):
+
+        # Check that dictionaries are populated
+        if len(self.word_dict) == 0 or len(self.tag_dict) == 0:
+            raise ValueError("Dictionaries were not populated. Check your CSV or parsing logic.")
+
+        idx2word = {i: w for w, i in self.word_dict.items()}
+        idx2tag = {i: w for w, i in self.tag_dict.items()}
+
+        self.idx2word_dict = idx2word
+        self.idx2tag_dict = idx2tag
+
+        return None
