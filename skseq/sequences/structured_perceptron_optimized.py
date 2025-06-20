@@ -1,8 +1,10 @@
 from __future__ import division
 import numpy as np
 import skseq.sequences.discriminative_sequence_classifier as dsc
-from skseq.sequences.sp_helpers import perceptron_update_cython, perceptron_update_fast
-#import skseq.sequences.sequence as seq
+from skseq.sequences.sp_helpers import perceptron_update_fast
+import numpy as np
+from .sp_helpers import perceptron_update_fast, pad_feature_list, get_emission_features, get_transition_features, get_initial_features, get_final_features
+
 
 class StructuredPerceptronOptimized(dsc.DiscriminativeSequenceClassifier):
     """
@@ -20,9 +22,16 @@ class StructuredPerceptronOptimized(dsc.DiscriminativeSequenceClassifier):
         self.learning_rate = learning_rate
         self.averaged = averaged
         self.params_per_epoch = []
-        self.parameters = np.zeros(self.feature_mapper.get_num_features())
+        try:
+            self.parameters = np.zeros(self.feature_mapper.get_num_features())
+        except Exception as e:
+            print("Error allocating self.parameters:", e)
+            raise
+
         self.fitted = False
         self.feature_mapper = feature_mapper
+
+
 
     def fit(self, dataset, num_epochs):
         """
@@ -94,58 +103,106 @@ class StructuredPerceptronOptimized(dsc.DiscriminativeSequenceClassifier):
         predicted_sequence, _ = self.viterbi_decode(sequence)
         return predicted_sequence.y
 
-    """
     def perceptron_update(self, sequence):
         predicted_sequence, _ = self.viterbi_decode(sequence)
-        y_hat = np.array(predicted_sequence.y).tolist()  # Ensure it's a list
-
+        y_hat = np.array(predicted_sequence.y, dtype=np.int32)
 
         emission_features_true = []
         emission_features_hat = []
         transition_features_true = []
         transition_features_hat = []
 
+        node_cache = self.feature_mapper.node_feature_cache
+        add_emission = self.feature_mapper.add_emission_features
+        edge_cache = self.feature_mapper.edge_feature_cache
+        add_transition = self.feature_mapper.add_transition_features
+
         for i in range(len(sequence.y)):
             if sequence.y[i] != y_hat[i]:
-                emission_features_true.append(self.feature_mapper.get_emission_features(sequence.x, i, sequence.y[i]))
-                emission_features_hat.append(self.feature_mapper.get_emission_features(sequence.x, i, y_hat[i]))
+                emission_features_true.append(
+                    get_emission_features(sequence, i, sequence.y[i], node_cache, add_emission)
+                )
+                emission_features_hat.append(
+                    get_emission_features(sequence, i, y_hat[i], node_cache, add_emission)
+                )
             else:
                 emission_features_true.append([])
                 emission_features_hat.append([])
 
-            if i > 0 and (sequence.y[i] != y_hat[i] or sequence.y[i-1] != y_hat[i-1]):
-                transition_features_true.append(self.feature_mapper.get_transition_features(sequence.x, i-1, sequence.y[i], sequence.y[i-1]))
-                transition_features_hat.append(self.feature_mapper.get_transition_features(sequence.x, i-1, y_hat[i], y_hat[i-1]))
+            if i > 0 and (sequence.y[i] != y_hat[i] or sequence.y[i - 1] != y_hat[i - 1]):
+                transition_features_true.append(
+                    get_transition_features(sequence, i - 1, sequence.y[i], sequence.y[i - 1], edge_cache, add_transition)
+                )
+                transition_features_hat.append(
+                    get_transition_features(sequence, i - 1, y_hat[i], y_hat[i - 1], edge_cache, add_transition)
+                )
             else:
                 transition_features_true.append([])
                 transition_features_hat.append([])
 
-        initial_features_true = self.feature_mapper.get_initial_features(sequence.x, sequence.y[0]) if sequence.y[0] != y_hat[0] else []
-        initial_features_hat = self.feature_mapper.get_initial_features(sequence.x, y_hat[0]) if sequence.y[0] != y_hat[0] else []
+        # Initial and final features
+        initial_cache = self.feature_mapper.initial_state_feature_cache
+        add_initial = self.feature_mapper.add_initial_features
+        final_cache = self.feature_mapper.final_state_feature_cache
+        add_final = self.feature_mapper.add_final_features
 
-        final_features_true = self.feature_mapper.get_final_features(sequence.x, sequence.y[-1]) if sequence.y[-1] != y_hat[-1] else []
-        final_features_hat = self.feature_mapper.get_final_features(sequence.x, y_hat[-1]) if sequence.y[-1] != y_hat[-1] else []
+        if sequence.y[0] != y_hat[0]:
+            initial_features_true = get_initial_features(sequence, sequence.y[0], initial_cache, add_initial)
+            initial_features_hat  = get_initial_features(sequence, y_hat[0], initial_cache, add_initial)
+        else:
+            initial_features_true = []
+            initial_features_hat = []
 
-        # Call optimized Cython loop
+        if sequence.y[-1] != y_hat[-1]:
+            final_features_true = get_final_features(sequence, sequence.y[-1], final_cache, add_final)
+            final_features_hat  = get_final_features(sequence, y_hat[-1], final_cache, add_final)
+        else:
+            final_features_true = []
+            final_features_hat = []
+
+        # Padding
+        max_emission_len = max(
+            max((len(f) for f in emission_features_true), default=0),
+            max((len(f) for f in emission_features_hat), default=0)
+        )
+        max_transition_len = max(
+            max((len(f) for f in transition_features_true), default=0),
+            max((len(f) for f in transition_features_hat), default=0)
+        )
+
+        emission_features_true_padded = pad_feature_list(emission_features_true, max_emission_len)
+        emission_features_hat_padded  = pad_feature_list(emission_features_hat,  max_emission_len)
+        transition_features_true_padded = pad_feature_list(transition_features_true, max_transition_len)
+        transition_features_hat_padded  = pad_feature_list(transition_features_hat,  max_transition_len)
+
+        initial_features_true = np.array(initial_features_true, dtype=np.int32)
+        initial_features_hat = np.array(initial_features_hat, dtype=np.int32)
+        final_features_true = np.array(final_features_true, dtype=np.int32)
+        final_features_hat = np.array(final_features_hat, dtype=np.int32)
+
+        sequence_y = np.array(sequence.y, dtype=np.int32)
+
+        # Optimized Cython update
         num_labels, num_mistakes = perceptron_update_fast(
             self.parameters,
-            emission_features_true,
-            emission_features_hat,
-            transition_features_true,
-            transition_features_hat,
+            emission_features_true_padded,
+            emission_features_hat_padded,
+            transition_features_true_padded,
+            transition_features_hat_padded,
             initial_features_true,
             initial_features_hat,
             final_features_true,
             final_features_hat,
-            sequence.y,
+            sequence_y,
             y_hat,
             self.learning_rate
         )
         return num_labels, num_mistakes
+
     """
     def perceptron_update(self, sequence):
         predicted_sequence, _ = self.viterbi_decode(sequence)
-        y_hat = np.array(predicted_sequence.y).tolist()  # Ensure it's a list
+        y_hat = np.array(predicted_sequence.y, dtype=np.int32)
 
         emission_features_true = []
         emission_features_hat = []
@@ -190,23 +247,48 @@ class StructuredPerceptronOptimized(dsc.DiscriminativeSequenceClassifier):
             final_features_true = []
             final_features_hat = []
 
+        max_emission_len = max(
+            max(len(f) for f in emission_features_true),
+            max(len(f) for f in emission_features_hat),
+        )
+
+        max_transition_len = max(
+            max(len(f) for f in transition_features_true),
+            max(len(f) for f in transition_features_hat),
+        )
+
+
+        # Convert to padded numpy arrays
+        emission_features_true_padded = pad_feature_list(emission_features_true, max_emission_len)
+        emission_features_hat_padded  = pad_feature_list(emission_features_hat,  max_emission_len)
+
+        transition_features_true_padded = pad_feature_list(transition_features_true, max_transition_len)
+        transition_features_hat_padded  = pad_feature_list(transition_features_hat,  max_transition_len)
+        
+        initial_features_true = np.array(initial_features_true, dtype=np.int32)
+        initial_features_hat = np.array(initial_features_hat, dtype=np.int32)
+        final_features_true = np.array(final_features_true, dtype=np.int32)
+        final_features_hat = np.array(final_features_hat, dtype=np.int32)
+
+        sequence_y = np.array(sequence.y, dtype=np.int32)
         # Optimized Cython update
         num_labels, num_mistakes = perceptron_update_fast(
             self.parameters,
-            emission_features_true,
-            emission_features_hat,
-            transition_features_true,
-            transition_features_hat,
+            emission_features_true_padded,
+            emission_features_hat_padded,
+            transition_features_true_padded,
+            transition_features_hat_padded,
             initial_features_true,
             initial_features_hat,
             final_features_true,
             final_features_hat,
-            sequence.y,
+            sequence_y,
             y_hat,
             self.learning_rate
         )
         return num_labels, num_mistakes
-
+    
+    """
 
     def save_model(self, dir):
         """
